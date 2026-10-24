@@ -6,17 +6,20 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.provider.Settings
-import android.util.Base64
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 
 /**
  * Android implementation of CleanFrame's FrameDevice API.
  * Every method takes a callback id and answers through window.__fdCb(id, err, value).
+ * App icons are served to the page at /appicon/<package>.png (CleanFrame only accepts
+ * icon paths that start with "/").
  */
 class Bridge(private val activity: Activity, private val web: WebView) {
 
@@ -33,6 +36,31 @@ class Bridge(private val activity: Activity, private val web: WebView) {
         "tubi" to "com.tubitv"
     )
 
+    // Fallback: recognise a brand by the app's visible name if its package differs.
+    private val brandLabels = mapOf(
+        "stremio" to listOf("stremio"),
+        "netflix" to listOf("netflix"),
+        "disneyplus" to listOf("disney+", "disney plus"),
+        "youtube" to listOf("youtube"),
+        "appletv" to listOf("apple tv", "apple tv+"),
+        "primevideo" to listOf("prime video", "amazon prime video"),
+        "spotify" to listOf("spotify"),
+        "hbomax" to listOf("max", "hbo max"),
+        "tubi" to listOf("tubi", "tubi tv")
+    )
+
+    private val brandByPkg: Map<String, String> = brands.entries.associate { it.value to it.key }
+    private val iconCache = HashMap<String, ByteArray>()
+
+    private fun brandFor(pkg: String, label: String): String {
+        brandByPkg[pkg]?.let { return it }
+        val l = label.trim().lowercase()
+        for ((brand, names) in brandLabels) {
+            if (l in names) return brand
+        }
+        return ""
+    }
+
     private fun error(message: String, detail: String? = null): JSONObject {
         val o = JSONObject().put("message", message)
         if (detail != null) o.put("detail", detail)
@@ -46,6 +74,43 @@ class Bridge(private val activity: Activity, private val web: WebView) {
             web.evaluateJavascript("window.__fdCb($id,$e,$v)", null)
         }
     }
+
+    // ---- Icons -------------------------------------------------------------
+
+    private fun render(d: Drawable): ByteArray {
+        val size = 192
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        d.setBounds(0, 0, size, size)
+        d.draw(Canvas(bmp))
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+        return out.toByteArray()
+    }
+
+    private fun cacheIcon(pkg: String, d: Drawable) {
+        val bytes = render(d)
+        synchronized(iconCache) { iconCache[pkg] = bytes }
+    }
+
+    private fun renderPackage(pkg: String): ByteArray? {
+        return try {
+            val bytes = render(activity.packageManager.getApplicationIcon(pkg))
+            synchronized(iconCache) { iconCache[pkg] = bytes }
+            bytes
+        } catch (ex: Exception) {
+            null
+        }
+    }
+
+    /** Called by the WebView for /appicon/<package>.png requests. */
+    fun iconResponse(path: String): WebResourceResponse? {
+        val pkg = path.removeSuffix(".png")
+        val cached = synchronized(iconCache) { iconCache[pkg] }
+        val bytes: ByteArray = cached ?: renderPackage(pkg) ?: return null
+        return WebResourceResponse("image/png", null, ByteArrayInputStream(bytes))
+    }
+
+    // ---- Launching ---------------------------------------------------------
 
     private fun launchPackage(pkg: String): JSONObject? {
         val pm = activity.packageManager
@@ -134,13 +199,14 @@ class Bridge(private val activity: Activity, private val web: WebView) {
         }
     }
 
+    // ---- App list ----------------------------------------------------------
+
     @JavascriptInterface
     fun apps(id: Int, arg: String) {
         thread {
             try {
                 val pm = activity.packageManager
                 val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
-                val brandByPkg = brands.entries.associate { it.value to it.key }
                 val brandOrder = brands.keys.toList()
                 val seen = HashSet<String>()
                 val rows = ArrayList<JSONObject>()
@@ -148,14 +214,16 @@ class Bridge(private val activity: Activity, private val web: WebView) {
                 for (ri in pm.queryIntentActivities(query, 0)) {
                     val pkg = ri.activityInfo.packageName
                     if (pkg == activity.packageName || !seen.add(pkg)) continue
-                    val brand = brandByPkg[pkg] ?: ""
+                    val label = ri.loadLabel(pm).toString()
+                    val brand = brandFor(pkg, label)
                     val rank = if (brand.isEmpty()) 30 else brandOrder.indexOf(brand)
+                    cacheIcon(pkg, ri.loadIcon(pm))
                     rows.add(
                         JSONObject()
                             .put("appId", pkg)
-                            .put("name", ri.loadLabel(pm).toString())
+                            .put("name", label)
                             .put("brand", brand)
-                            .put("icon", toDataUri(ri.loadIcon(pm)))
+                            .put("icon", "/appicon/$pkg.png")
                             .put("rank", rank)
                     )
                 }
@@ -170,16 +238,5 @@ class Bridge(private val activity: Activity, private val web: WebView) {
                 reply(id, error("The Shield could not list its apps.", ex.message), null)
             }
         }
-    }
-
-    private fun toDataUri(d: Drawable): String {
-        val size = 128
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
-        d.setBounds(0, 0, size, size)
-        d.draw(canvas)
-        val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-        return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 }

@@ -5,6 +5,7 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -21,15 +22,22 @@ class MainActivity : Activity() {
 
         web = WebView(this)
         web.setBackgroundColor(Color.BLACK)
+        web.isVerticalScrollBarEnabled = false
+        web.isHorizontalScrollBarEnabled = false
+        web.overScrollMode = View.OVER_SCROLL_NEVER
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.settings.mediaPlaybackRequiresUserGesture = false
         web.settings.allowFileAccess = false
         web.settings.allowContentAccess = false
+        // Ignore the system font scale: CleanFrame lays out on a fixed 1920x1080 stage.
+        web.settings.textZoom = 100
 
+        val bridge = Bridge(this, web)
         val host = "appassets.androidplatform.net"
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/appicon/", WebViewAssetLoader.PathHandler { path -> bridge.iconResponse(path) })
             .build()
 
         web.webViewClient = object : WebViewClient() {
@@ -45,10 +53,21 @@ class MainActivity : Activity() {
             ): Boolean = request.url.host != host
         }
 
-        web.addJavascriptInterface(Bridge(this, web), "AndroidBridge")
+        web.addJavascriptInterface(bridge, "AndroidBridge")
         setContentView(web)
         web.requestFocus()
         web.loadUrl("https://$host/assets/app/index.html")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        web.onResume()
+        web.requestFocus()
+    }
+
+    override fun onPause() {
+        web.onPause()
+        super.onPause()
     }
 
     // Remote Back is mapped to Escape, which CleanFrame uses to close panels.

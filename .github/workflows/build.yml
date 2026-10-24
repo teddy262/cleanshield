@@ -13,17 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch CleanFrame UI and swap in the Android device adapter
+      - name: Fetch CleanFrame UI and adapt it for Android TV
         run: |
           git clone --depth 1 https://github.com/nthnclrk/CleanFrame.git /tmp/cf
           mkdir -p app/src/main/assets/app
           cp -r /tmp/cf/app/. app/src/main/assets/app/
           cp /tmp/cf/LICENSE /tmp/cf/THIRD_PARTY_NOTICES.md app/src/main/assets/
-          DEV=$(find app/src/main/assets/app -name device.js | head -n1)
-          test -n "$DEV" || { echo "device.js not found in CleanFrame app/"; exit 1; }
-          echo "Replacing $DEV"
-          cp shim/device.js "$DEV"
-          ls app/src/main/assets/app | head -50
+          test -f app/src/main/assets/app/device.js
+          cp shim/device.js app/src/main/assets/app/device.js
+          bash shim/patch-ui.sh app/src/main/assets/app
 
       - uses: actions/setup-java@v4
         with:
