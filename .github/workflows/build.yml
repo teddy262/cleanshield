@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CleanFrame UI and swap in the Android device adapter
+        run: |
+          git clone --depth 1 https://github.com/nthnclrk/CleanFrame.git /tmp/cf
+          mkdir -p app/src/main/assets/app
+          cp -r /tmp/cf/app/. app/src/main/assets/app/
+          cp /tmp/cf/LICENSE /tmp/cf/THIRD_PARTY_NOTICES.md app/src/main/assets/
+          DEV=$(find app/src/main/assets/app -name device.js | head -n1)
+          test -n "$DEV" || { echo "device.js not found in CleanFrame app/"; exit 1; }
+          echo "Replacing $DEV"
+          cp shim/device.js "$DEV"
+          ls app/src/main/assets/app | head -50
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Publish to the "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          files: app/build/outputs/apk/debug/app-debug.apk
